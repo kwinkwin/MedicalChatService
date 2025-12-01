@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-dotenv
+neo4j
+google-generativeai
+faiss-cpu
+huggingface_hub
+numpy
+pydantic
+requests
