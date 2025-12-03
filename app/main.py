@@ -1,34 +1,61 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from contextlib import asynccontextmanager
 from app.services.rag_engine import MedicalGraphRAG
 from app.models import ChatRequest, ChatResponse
+import logging
+from app.logger import setup_logging
+
+# 1. Khởi tạo cấu hình Log ngay đầu file
+setup_logging()
+logger = logging.getLogger("MedicalChatApp") # Đặt tên logger cụ thể
 
 rag_service = MedicalGraphRAG()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Khởi động: Load data
-    rag_service.load_data_and_build_index()
+    # Log khi khởi động
+    logger.info(">>> Đang khởi động hệ thống Medical AI Chatbot...")
+    try:
+        rag_service.load_data_and_build_index()
+        logger.info(">>> Load dữ liệu hoàn tất. Sẵn sàng phục vụ!")
+    except Exception as e:
+        logger.error(f">>> Lỗi khi load dữ liệu: {e}", exc_info=True)
+    
     yield
-    # Tắt: Dọn dẹp
+    
+    # Log khi tắt
+    logger.info(">>> Đang tắt hệ thống...")
     rag_service.close()
+    logger.info(">>> Hệ thống đã tắt hoàn toàn.")
 
 app = FastAPI(lifespan=lifespan, title="Medical AI Chatbot API")
 
 @app.get("/")
 def health_check():
+    logger.info("Health check requested") # Log kiểm tra sức khoẻ
     return {"status": "running", "ai_ready": rag_service.is_ready}
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest):
     if not request.text:
+        logger.warning("Client gửi request rỗng") # Log cảnh báo
         raise HTTPException(status_code=400, detail="Nội dung chat không được để trống")
+    
+    # Log câu hỏi người dùng
+    logger.info(f"Nhận câu hỏi: {request.text}")
     
     try:
         result = await rag_service.process_question(request.text)
+        
+        # Log kết quả trả về (chỉ log đoạn đầu cho đỡ dài)
+        answer_preview = (result["answer"][:50] + '..') if result["answer"] else "No answer"
+        logger.info(f"Trả lời: {answer_preview}")
+        
         return ChatResponse(
             answer=result["answer"],
             debug_info=result.get("debug_info")
         )
     except Exception as e:
+        # Quan trọng: Ghi log lỗi đầy đủ (traceback) ra file
+        logger.error(f"Lỗi xử lý tại endpoint chat: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
