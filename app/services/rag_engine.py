@@ -42,46 +42,97 @@ PROMPT_LLM_CANONICAL = (
     "Quy định: Không thêm văn bản giải thích ngoài JSON. Nếu không tìm thấy gì phù hợp, trả về mảng rỗng."
 )
 
+# PROMPT_LLM_CYPHER = (
+#     "Bạn là chuyên gia Neo4j (Graph Database) và Y tế.\n"
+#     "Nhiệm vụ: Phân tích câu hỏi và sinh Cypher Query tối ưu nhất để lấy dữ liệu từ Knowledge Graph.\n\n"
+    
+#     "Input:\n"
+#     "1. User Question: <<<QUESTION>>>\n"
+#     "2. Selected Entities: <<<CANDIDATES>>> (Các thực thể đã được nhận diện)\n"
+#     "3. Schema: <<<SCHEMA>>>\n\n"
+    
+#     "CHIẾN THUẬT QUERY (Hãy chọn 1 trong 3 dựa trên ý định người dùng):\n\n"
+    
+#     "--- CHIẾN THUẬT 1: TRA CỨU TRỰC TIẾP (Direct Lookup) ---\n"
+#     "Áp dụng khi: Người dùng hỏi về thuộc tính hoặc quan hệ của 1 thực thể cụ thể.\n"
+#     "Ví dụ: 'Biến chứng của bệnh X?', 'Thuốc Y trị bệnh gì?'\n"
+#     "Pattern: MATCH (n:Label {ten: 'Tên'})-[r]->(target) RETURN ...\n\n"
+    
+#     "--- CHIẾN THUẬT 2: TÌM KIẾM TỔ HỢP / CHẨN ĐOÁN (Intersection/Scoring) ---\n"
+#     "Áp dụng khi: Người dùng đưa ra danh sách các yếu tố (triệu chứng, nguyên nhân...) và hỏi về đối tượng chung.\n"
+#     "Ví dụ: 'Sốt, ho, đau đầu là bệnh gì?', 'Thuốc nào rẻ mà tốt?'\n"
+#     "Pattern:\n"
+#     "MATCH (target)-[:REL]->(source)\n"
+#     "WHERE toLower(source.ten) CONTAINS 'yếu tố A' OR toLower(source.ten) CONTAINS 'yếu tố B' ...\n"
+#     "WITH target, count(distinct source) AS matches, collect(source.ten) AS evidences\n"
+#     "RETURN target.ten, matches, evidences ORDER BY matches DESC LIMIT 5\n\n"
+    
+#     "--- CHIẾN THUẬT 3: TÌM MỐI LIÊN HỆ (Path Finding) ---\n"
+#     "Áp dụng khi: Người dùng hỏi về quan hệ giữa 2 thực thể cụ thể.\n"
+#     "Ví dụ: 'Tiểu đường ăn sầu riêng được không?', 'Thuốc A uống chung thuốc B được không?'\n"
+#     "Pattern:\n"
+#     "MATCH (a {ten: 'A'}), (b {ten: 'B'})\n"
+#     "MATCH p = shortestPath((a)-[*]-(b)) \n"
+#     "RETURN p\n\n"
+    
+#     "QUY ĐỊNH BẮT BUỘC:\n"
+#     "- CHỈ dùng Label và Relationship Type có trong Schema.\n"
+#     "- Luôn dùng `toLower(...) CONTAINS ...` để tìm tên node (để tránh lỗi case-sensitive).\n"
+#     "- Trả về đủ thông tin (tên, mô tả, quan hệ) để bot trả lời.\n\n"
+    
+#     "Output:\n"
+#     "CHỈ trả về JSON: {\"cypher\": \"...\"}"
+# )
+
 PROMPT_LLM_CYPHER = (
-    "Bạn là chuyên gia Neo4j (Graph Database) và Y tế.\n"
-    "Nhiệm vụ: Phân tích câu hỏi và sinh Cypher Query tối ưu nhất để lấy dữ liệu từ Knowledge Graph.\n\n"
+    "Bạn là chuyên gia Neo4j và Phân tích Ý định Y khoa (Medical Intent Analyst).\n"
+    "Nhiệm vụ: Phân tích Input người dùng và danh sách Thực thể đã chọn (Selected Entities) và sinh câu lệnh Cypher phù hợp nhất để lấy dữ liệu từ Knowledge Graph.\n\n"
     
     "Input:\n"
-    "1. User Question: <<<QUESTION>>>\n"
-    "2. Selected Entities: <<<CANDIDATES>>> (Các thực thể đã được nhận diện)\n"
+    "1. User Input: <<<QUESTION>>>\n"
+    "2. Selected Entities: <<<CANDIDATES>>>\n"
     "3. Schema: <<<SCHEMA>>>\n\n"
     
-    "CHIẾN THUẬT QUERY (Hãy chọn 1 trong 3 dựa trên ý định người dùng):\n\n"
+    "QUY TRÌNH SUY LUẬN (CHAIN OF THOUGHT):\n"
+    "Bước 1: Xác định Ý ĐỊNH (Intent) của người dùng (kể cả khi họ không dùng câu hỏi):\n"
+    "   - Nhóm KỂ BỆNH/MÔ TẢ: 'Tôi bị đau đầu, mệt mỏi', 'Có triệu chứng sốt, ho'. -> Cần tìm nguyên nhân/bệnh (Chiến thuật 2).\n"
+    "   - Nhóm RA LỆNH/TÌM HIỂU: 'Nói về bệnh X', 'Thông tin thuốc Y', 'Viêm gan B'. -> Cần xem thông tin tổng quan và hàng xóm của node (Chiến thuật 1).\n"
+    "   - Nhóm KIỂM TRA QUAN HỆ: 'A dùng chung với B được không?', 'Mối liên hệ giữa X và Y'. -> Cần tìm đường đi (Chiến thuật 3).\n\n"
     
-    "--- CHIẾN THUẬT 1: TRA CỨU TRỰC TIẾP (Direct Lookup) ---\n"
-    "Áp dụng khi: Người dùng hỏi về thuộc tính hoặc quan hệ của 1 thực thể cụ thể.\n"
-    "Ví dụ: 'Biến chứng của bệnh X?', 'Thuốc Y trị bệnh gì?'\n"
-    "Pattern: MATCH (n:Label {ten: 'Tên'})-[r]->(target) RETURN ...\n\n"
+    "Bước 2: Chọn CHIẾN THUẬT QUERY tương ứng:\n\n"
     
-    "--- CHIẾN THUẬT 2: TÌM KIẾM TỔ HỢP / CHẨN ĐOÁN (Intersection/Scoring) ---\n"
-    "Áp dụng khi: Người dùng đưa ra danh sách các yếu tố (triệu chứng, nguyên nhân...) và hỏi về đối tượng chung.\n"
-    "Ví dụ: 'Sốt, ho, đau đầu là bệnh gì?', 'Thuốc nào rẻ mà tốt?'\n"
+    "--- CHIẾN THUẬT 1: KHÁM PHÁ THỰC THỂ (Entity Exploration) ---\n"
+    "Áp dụng cho: Tra cứu thông tin, định nghĩa, hoặc những câu lệnh có nghĩa tương tự với 'nói rõ hơn về...', 'chi tiết về...'.\n"
+    "Mục tiêu: Lấy thông tin node đó VÀ các node xung quanh (1-hop) để có ngữ cảnh.\n"
     "Pattern:\n"
-    "MATCH (target)-[:REL]->(source)\n"
-    "WHERE toLower(source.ten) CONTAINS 'yếu tố A' OR toLower(source.ten) CONTAINS 'yếu tố B' ...\n"
-    "WITH target, count(distinct source) AS matches, collect(source.ten) AS evidences\n"
-    "RETURN target.ten, matches, evidences ORDER BY matches DESC LIMIT 5\n\n"
+    "MATCH (n:Label)-[r]-(m)\n"
+    "WHERE toLower(n.ten) CONTAINS 'tên entity'\n"
+    "RETURN n, r, m\n\n"
     
-    "--- CHIẾN THUẬT 3: TÌM MỐI LIÊN HỆ (Path Finding) ---\n"
-    "Áp dụng khi: Người dùng hỏi về quan hệ giữa 2 thực thể cụ thể.\n"
-    "Ví dụ: 'Tiểu đường ăn sầu riêng được không?', 'Thuốc A uống chung thuốc B được không?'\n"
+    "--- CHIẾN THUẬT 2: CHẨN ĐOÁN ĐA YẾU TỐ (Multi-Factor Diagnosis) ---\n"
+    "Áp dụng cho: Người dùng liệt kê triệu chứng (kể khổ), yếu tố nguy cơ, hoặc hỏi 'là bệnh gì?', hoặc hỏi về đối tượng chung.\n"
+    "Mục tiêu: Tìm node trung tâm (thường là Bệnh) có kết nối với nhiều entity trong danh sách nhất.\n"
     "Pattern:\n"
-    "MATCH (a {ten: 'A'}), (b {ten: 'B'})\n"
-    "MATCH p = shortestPath((a)-[*]-(b)) \n"
+    "MATCH (target:Benh)-[:REL]->(source)\n"
+    "WHERE toLower(source.ten) CONTAINS 'entity 1' OR toLower(source.ten) CONTAINS 'entity 2' ...\n"
+    "WITH target, count(distinct source) AS matches, collect(distinct source.ten) AS evidences\n"
+    "RETURN target.ten, target.mo_ta, matches, evidences ORDER BY matches DESC LIMIT 5\n\n"
+    
+    "--- CHIẾN THUẬT 3: PHÂN TÍCH LIÊN KẾT (Path Analysis) ---\n"
+    "Áp dụng cho: Câu hỏi về tương tác thuốc, kiêng kỵ, hoặc quan hệ giữa 2 thực thể cụ thể.\n"
+    "Pattern:\n"
+    "MATCH (a), (b)\n"
+    "WHERE toLower(a.ten) CONTAINS 'entity 1' AND toLower(b.ten) CONTAINS 'entity 2'\n"
+    "MATCH p = shortestPath((a)-[*]-(b))\n"
     "RETURN p\n\n"
     
-    "QUY ĐỊNH BẮT BUỘC:\n"
-    "- CHỈ dùng Label và Relationship Type có trong Schema.\n"
+    "Bước 3: Sinh Cypher (Final Output).\n"
+    "Yêu cầu:\n"
+    "- Chỉ được dùng đúng Label/RelType trong Schema.\n"
     "- Luôn dùng `toLower(...) CONTAINS ...` để tìm tên node (để tránh lỗi case-sensitive).\n"
-    "- Trả về đủ thông tin (tên, mô tả, quan hệ) để bot trả lời.\n\n"
-    
-    "Output:\n"
-    "CHỈ trả về JSON: {\"cypher\": \"...\"}"
+    "- Trả về đủ thông tin (tên, mô tả, quan hệ) để bot trả lời.\n"
+    "- Khi RETURN node Bệnh, BẮT BUỘC phải lấy kèm thuộc tính 'nguon' (nếu có)."
+    "- Output là JSON duy nhất: {\"cypher\": \"...\"}"
 )
 
 PROMPT_LLM_ANSWER = """
@@ -113,13 +164,37 @@ Cấu trúc báo cáo:
 
 ### 3. Cảnh báo (Alerts)
 - Nêu bật các chống chỉ định hoặc rủi ro tìm thấy (Nếu không có, bỏ qua mục này).
+- Thông báo rằng các thông tin từ hệ thống Knowledge Graph mang tính tham khảo. Vui lòng tham vấn bác sĩ chuyên khoa.
 
-----------------
-*Disclaimer: Thông tin từ hệ thống Knowledge Graph mang tính tham khảo. Vui lòng tham vấn bác sĩ chuyên khoa.*
+### 4. Nguồn tham khảo (References)
+- Kiểm tra trong dữ liệu KG, nếu node có thuộc tính `nguon` (thường là danh sách link url), hãy trích xuất và hiển thị dưới dạng link Markdown.
+- Định dạng: "- [Xem chi tiết tại Nhà thuốc Long Châu](url)" hoặc "- [Nguồn tham khảo](url)".
+- Chỉ hiển thị nếu có link thực sự.
 
 Output Rules:
-- Nếu Dữ liệu KG rỗng hoặc không liên quan: "Dữ liệu tri thức hiện tại chưa đủ để trả lời câu hỏi này."
+- Nếu Dữ liệu KG rỗng hoặc không liên quan: "Hệ thống tri thức hiện tại của tôi chỉ tập trung vào các chủ đề y tế phổ biến, nên tôi chưa đủ thông tin để trả lời câu hỏi này. Bạn có câu hỏi nào khác liên quan đến sức khỏe không?"
 - Định dạng Markdown.
+"""
+
+PROMPT_QUERY_REWRITE = """
+Bạn là mô-đun 'Coreference Resolution' (Giải quyết đồng tham chiếu) cho AI.
+Nhiệm vụ: Viết lại câu hỏi mới nhất của người dùng sao cho nó ĐẦY ĐỦ NGỮ NGHĨA, dựa trên Lịch sử hội thoại.
+
+Input:
+- Lịch sử chat:
+<<<HISTORY>>>
+- Câu hỏi hiện tại: <<<CURRENT_QUESTION>>>
+
+Quy tắc:
+1. Thay thế các đại từ (nó, bệnh đó, thuốc này...) bằng tên thực thể cụ thể được nhắc đến trước đó.
+2. Nếu câu hỏi đã rõ ràng hoặc không liên quan đến lịch sử, hãy GIỮ NGUYÊN.
+3. KHÔNG trả lời câu hỏi, chỉ viết lại nó.
+4. Output chỉ là một dòng văn bản duy nhất (câu hỏi đã viết lại).
+
+Ví dụ:
+History: "User: Triệu chứng sốt xuất huyết? AI: Sốt cao, đau đầu..."
+Current: "Cách chữa nó?"
+Output: "Cách chữa bệnh sốt xuất huyết?"
 """
 
 # --- 2. CONFIGS & UTILS ---
@@ -301,6 +376,46 @@ class MedicalGraphRAG:
             },
         )
         return resp.text
+    
+    def _format_history(self, history: List[dict], limit: int = 6) -> str:
+        """
+        Chuyển đổi List[Message] thành chuỗi văn bản để đưa vào Prompt.
+        Chỉ lấy 'limit' tin nhắn gần nhất để tiết kiệm token.
+        """
+        if not history:
+            return ""
+        
+        # Lấy N tin nhắn cuối cùng
+        recent_msgs = history[-limit:]
+        formatted = []
+        for msg in recent_msgs:
+            # Xử lý linh hoạt: msg có thể là dict hoặc object Pydantic (như bạn định nghĩa)
+            role = getattr(msg, 'role', None) or msg.get('role', 'user')
+            content = getattr(msg, 'content', None) or msg.get('content', '')
+            
+            role_name = "User" if role == "user" else "ai"
+            formatted.append(f"{role_name}: {content}")
+            
+        return "\n".join(formatted)
+
+    def _rewrite_question(self, user_question: str, history_str: str) -> str:
+        """
+        Gọi LLM để viết lại câu hỏi dựa trên ngữ cảnh.
+        """
+        if not history_str:
+            return user_question # Không có lịch sử thì không cần viết lại
+            
+        prompt = PROMPT_QUERY_REWRITE \
+            .replace("<<<HISTORY>>>", history_str) \
+            .replace("<<<CURRENT_QUESTION>>>", user_question)
+            
+        try:
+            # Dùng model rẻ/nhanh nhất để rewrite (Flash 2.0 rất tốt việc này)
+            rewritten = self._call_gemini(prompt, model="gemini-2.0-flash", max_output_tokens=256)
+            return rewritten.strip()
+        except Exception as e:
+            logger.error(f"Error rewriting question: {e}")
+            return user_question # Fallback về câu gốc nếu lỗi
 
     # --- CORE FUNCTIONS ---
 
@@ -431,19 +546,31 @@ class MedicalGraphRAG:
             print(f">>> CRITICAL ERROR loading data: {e}")
             logger.critical(f"CRITICAL ERROR loading data: {e}", exc_info=True)
 
-    async def process_question(self, user_question: str) -> Dict[str, Any]:
+    async def process_question(self, user_question: str, history: List[dict]) -> Dict[str, Any]:
         """
         Main pipeline: Retrieve -> Canonicalize -> Cypher Gen -> Execute -> Answer
         """
+        # history
+        print(f"++++++++++++++++++++++++++++++++++{len(history)}")
         try:
             print(f">>> START processing question: {user_question}")
             logger.info(f"START processing question: {user_question}")
             
             if not self.is_ready:
                 return {"answer": "Hệ thống đang khởi động hoặc gặp lỗi kết nối CSDL."}
-
+            
+            history_str = self._format_history(history)
+            standalone_question = user_question
+            
+            if history_str:
+                print(">>> Rewriting question based on history...")
+                standalone_question = self._rewrite_question(user_question, history_str)
+                print(f">>> Rewritten Question: {standalone_question}")
+                logger.info(f"Rewritten Question: {standalone_question}")
+                
             # 1. Retrieve Candidates
-            qvec = self._embed_texts([user_question])[0]
+            # qvec = self._embed_texts([user_question])[0]
+            qvec = self._embed_texts([standalone_question])[0]
             qvec = qvec / (np.linalg.norm(qvec) + 1e-12)
             
             # Search FAISS
@@ -472,7 +599,7 @@ class MedicalGraphRAG:
             # prompt_can = PROMPT_LLM_CANONICAL.replace("<QUESTION>", user_question) + "\nCandidates:\n" + top_candidates_str
             
             prompt_can = PROMPT_LLM_CANONICAL \
-            .replace("<QUESTION>", user_question) \
+            .replace("<QUESTION>", standalone_question) \
             .replace("<CANDIDATES>", json.dumps(rich_candidates[:100], ensure_ascii=False))
 
             canon_raw = self._call_gemini(prompt_can, model="gemini-2.0-flash", max_output_tokens=1024)
@@ -537,7 +664,7 @@ class MedicalGraphRAG:
             REAL_SCHEMA_TEXT = self._get_graph_schema(self.driver)
             
             prompt_cy = PROMPT_LLM_CYPHER \
-            .replace("<<<QUESTION>>>", user_question) \
+            .replace("<<<QUESTION>>>", standalone_question) \
             .replace("<<<CANDIDATES>>>", json.dumps(selected_entities, ensure_ascii=False)) \
             .replace("<<<SCHEMA>>>", REAL_SCHEMA_TEXT)
 
@@ -605,7 +732,7 @@ class MedicalGraphRAG:
             facts_json = json.dumps(records, ensure_ascii=False)
         
             prompt_answer = PROMPT_LLM_ANSWER \
-                .replace("<<<QUESTION>>>", user_question) \
+                .replace("<<<QUESTION>>>", standalone_question) \
                 .replace("<<<FACTS>>>", facts_json)
                 
             logger.info("Generating final answer with Gemini...")
@@ -615,6 +742,7 @@ class MedicalGraphRAG:
                 "answer": final_answer,
                 "debug_info": {
                     "question": user_question,
+                    "rewritten_question": standalone_question,
                     # "ordered_candidates": ordered_candidates[:5],
                     "selected_entities": selected_entities,
                     "executed_cypher": executed_cypher,
