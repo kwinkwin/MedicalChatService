@@ -1,7 +1,8 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Header, Depends, status
 from contextlib import asynccontextmanager
 from app.services.rag_engine import MedicalGraphRAG
 from app.models import ChatRequest, ChatResponse
+from app.config import settings
 import logging
 from app.logger import setup_logging
 
@@ -30,12 +31,25 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan, title="Medical AI Chatbot API")
 
+# --- 1. FUNCTION KIỂM TRA API KEY ---
+async def verify_api_key(x_api_key: str = Header(..., alias="X-API-Key")):
+    """
+    Kiểm tra xem Header 'X-API-Key' có khớp với cấu hình không.
+    Nếu không khớp -> Trả về lỗi 401 Unauthorized.
+    """
+    if x_api_key != settings.INTERNAL_API_KEY:
+        logger.warning(f"Unauthorized access attempt with key: {x_api_key}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API Key",
+        )
+
 @app.get("/")
 def health_check():
     logger.info("Health check requested") # Log kiểm tra sức khoẻ
     return {"status": "running", "ai_ready": rag_service.is_ready}
 
-@app.post("/api/chat", response_model=ChatResponse)
+@app.post("/api/chat", response_model=ChatResponse, dependencies=[Depends(verify_api_key)])
 async def chat_endpoint(request: ChatRequest):
     if not request.text:
         logger.warning("Client gửi request rỗng") # Log cảnh báo
@@ -43,9 +57,13 @@ async def chat_endpoint(request: ChatRequest):
     
     # Log câu hỏi người dùng
     logger.info(f"Nhận câu hỏi: {request.text}")
+    logger.info(f"Kèm theo history: {len(request.history)} messages")
     
     try:
-        result = await rag_service.process_question(request.text)
+        result = await rag_service.process_question(
+            user_question=request.text,
+            history=request.history
+        )
         
         # Log kết quả trả về (chỉ log đoạn đầu cho đỡ dài)
         answer_preview = (result["answer"][:50] + '..') if result["answer"] else "No answer"
