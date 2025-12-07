@@ -8,3 +8,4 @@ huggingface_hub
 numpy
 pydantic
 requests
+google-genai
