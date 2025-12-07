@@ -56,7 +56,13 @@ PROMPT_LLM_CYPHER = (
     "QUY TẮC BẤT DI BẤT DỊCH (HARD RULES):\n"
     "1. KHÔNG BAO GIỜ dùng `{id: ...}` hoặc `elementId(...)` trong câu lệnh MATCH. ID từ Vector Search có thể không khớp với cấu trúc Graph.\n"
     "2. LUÔN dùng `WHERE toLower(n.ten) CONTAINS toLower('từ khóa')` để tìm node.\n"
-    "3. Khi kiểm tra quan hệ giữa A và B, đừng tìm chính xác node B. Hãy tìm node A, bung mở quan hệ, và lọc kết quả chứa những từ khóa giống ngữ nghĩa với nghĩa của B.\n\n"
+    "3. Khi kiểm tra quan hệ giữa A và B, đừng tìm chính xác node B. Hãy tìm node A, bung mở quan hệ, và lọc kết quả chứa những từ khóa giống ngữ nghĩa với nghĩa của B.\n"
+    "4. Khi dùng nhiều quan hệ (OR logic), dùng cú pháp `[:REL_A|REL_B]` (chỉ một dấu hai chấm đầu tiên). KHÔNG DÙNG `[:REL_A|:REL_B]`.\n"
+    "5. QUAN TRỌNG: Khi RETURN loại quan hệ, CHỈ được dùng `type(r)`. TUYỆT ĐỐI KHÔNG dùng `type((a)-[r]->(b))`. Luôn đảm bảo biến `r` đã được định nghĩa trong MATCH (ví dụ: `MATCH (a)-[r:REL]->(b)` thay vì `MATCH (a)-[:REL]->(b)`).\n"
+    "6. QUAN TRỌNG VỀ QUAN HỆ (RELATIONSHIP VARIABLE):\n"
+    "   - SAI: MATCH (a)-[:REL]->(b) RETURN type(r) (Lỗi: biến 'r' chưa được định nghĩa)\n"
+    "   - SAI: MATCH (a)-[:REL]->(b) RETURN type((a)-[r]->(b)) (Lỗi: cú pháp không tồn tại)\n"
+    "   - ĐÚNG: MATCH (a)-[r:REL]->(b) RETURN type(r) (Phải gán biến 'r' ngay trong MATCH)\n"
     
     "QUY TRÌNH SUY LUẬN (CHAIN OF THOUGHT):\n"
     "Bước 1: Xác định Ý ĐỊNH (Intent) & QUAN HỆ CỤ THỂ:\n"
@@ -241,8 +247,6 @@ class MedicalGraphRAG:
             auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD)
         )
         
-        self.client = genai.Client(api_key=settings.GOOGLE_API_KEY)
-
         self.hf_client = InferenceClient(
             token=settings.HF_API_KEY,
             provider="hf-inference"
@@ -381,43 +385,75 @@ class MedicalGraphRAG:
             raise ValueError("Cypher must contain RETURN clause")
         return True
     
-    @retry.Retry(predicate=retry.if_exception_type(exceptions.ResourceExhausted))
-    def _call_gemini(self, prompt: str, model: str = "gemini-2.5-flash", max_output_tokens: int = 1024, temperature: float = 0.0) -> str:
+    # @retry.Retry(predicate=retry.if_exception_type(exceptions.ResourceExhausted))
+    def _call_genma(self, prompt: str, model: str = "gemma-3-27b-it", max_output_tokens: int = 1024, temperature: float = 0.0, api_key=None) -> str:
         """
-        Call Gemini with a single plain-string prompt (no system role).
+        Call Genma with a single plain-string prompt (no system role).
         Returns text content.
         """
-        # generate_content may accept 'prompt' as plain string depending on SDK version
-        # Use a simple wrapper and try common attributes for response extraction
-        resp = self.client.models.generate_content(
-            model=model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=temperature,
-                max_output_tokens=max_output_tokens,
+        max_retries = len(settings.GOOGLE_KEYS) if settings.GOOGLE_KEYS else 1
+        
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                # 1. Nếu không truyền api_key cụ thể, lấy key từ vòng xoay
+                current_api_key = api_key if api_key else settings.get_next_google_key()
+                
+                # 2. Khởi tạo client với key này
+                self.client = genai.Client(api_key=current_api_key)
+                
+                # 3. Gọi API
+                resp = self.client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=temperature,
+                        max_output_tokens=max_output_tokens,
+                        safety_settings=[
+                            types.SafetySetting(
+                                category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                                threshold=types.HarmBlockThreshold.OFF,
+                            ),
+                            types.SafetySetting(
+                                category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                                threshold=types.HarmBlockThreshold.OFF,
+                            ),
+                            types.SafetySetting(
+                                category=types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
+                                threshold=types.HarmBlockThreshold.OFF,
+                            ),
+                        ],
+                    )
+                )
+                
+                # Nếu thành công, trả về kết quả ngay
+                return resp.text
 
-                safety_settings=[
-                    # Hate Speech
-                    types.SafetySetting(
-                        category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                        threshold=types.HarmBlockThreshold.OFF,
-                    ),
+            except exceptions.ResourceExhausted as e:
+                # 429: Hết Quota -> Log warning và tiếp tục vòng lặp (lấy key tiếp theo)
+                logger.warning(f"Key {current_api_key[:10]}... hết Quota. Đang đổi sang key khác... (Lần thử {attempt + 1}/{max_retries})")
+                last_error = e
+                # Set api_key về None để vòng lặp sau tự lấy key mới từ settings
+                api_key = None 
+                time.sleep(1) # Nghỉ 1 xíu trước khi đổi
+                continue
 
-                    # Harassment
-                    types.SafetySetting(
-                        category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                        threshold=types.HarmBlockThreshold.OFF,
-                    ),
+            except exceptions.PermissionDenied as e:
+                # 403: Key sai hoặc bị khóa -> Log và đổi key
+                logger.warning(f"Key {current_api_key[:10]}... bị từ chối quyền. Đang đổi... (Lần thử {attempt + 1}/{max_retries})")
+                last_error = e
+                api_key = None
+                continue
 
-                    # Civil Discourse
-                    types.SafetySetting(
-                        category=types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
-                        threshold=types.HarmBlockThreshold.OFF,
-                    ),
-                ],
-            )
-        )
-        return resp.text
+            except Exception as e:
+                # Các lỗi khác (500, Bad Request...) thì throw luôn, không đổi key làm gì
+                logger.error(f"Lỗi không liên quan đến Key: {e}")
+                raise e
+
+        # Nếu chạy hết vòng lặp (hết sạch key) mà vẫn lỗi
+        logger.error("Đã thử tất cả các Key nhưng đều thất bại.")
+        raise last_error
     
     def _format_history(self, history: List[dict], limit: int = 6) -> str:
         """
@@ -453,7 +489,7 @@ class MedicalGraphRAG:
             
         try:
             # Dùng model rẻ/nhanh nhất để rewrite (Flash 2.0 rất tốt việc này)
-            rewritten = self._call_gemini(prompt, model="gemini-2.5-flash", max_output_tokens=256)
+            rewritten = self._call_genma(prompt, max_output_tokens=256)
             return rewritten.strip()
         except Exception as e:
             logger.error(f"Error rewriting question: {e}")
@@ -670,7 +706,7 @@ class MedicalGraphRAG:
             .replace("<CANDIDATES>", json.dumps(rich_candidates[:500], ensure_ascii=False)) \
             .replace("<BENH_CANDIDATES>", json.dumps(disease_names_only, ensure_ascii=False))
 
-            canon_raw = self._call_gemini(prompt_can, model="gemini-2.5-flash", max_output_tokens=1024)
+            canon_raw = self._call_genma(prompt_can, max_output_tokens=1024)
             canon_json = self._safe_parse_json(canon_raw)
             
             selected_entities = []
@@ -689,7 +725,7 @@ class MedicalGraphRAG:
             .replace("<<<CANDIDATES>>>", json.dumps(selected_entities, ensure_ascii=False)) \
             .replace("<<<SCHEMA>>>", REAL_SCHEMA_TEXT)
 
-            cy_raw = self._call_gemini(prompt_cy, model="gemini-2.5-flash", max_output_tokens=1024)
+            cy_raw = self._call_genma(prompt_cy, max_output_tokens=1024)
             parsed = self._safe_parse_json(cy_raw)
             
             # cypher = ""
@@ -760,14 +796,14 @@ class MedicalGraphRAG:
                     executed_cyphers_log.append(f"Q{idx+1}: Failed")
 
             # 5. Final Answer
-            facts_json = json.dumps(records, ensure_ascii=False)
-        
+            facts_json = json.dumps(all_records, ensure_ascii=False)
+                    
             prompt_answer = PROMPT_LLM_ANSWER \
                 .replace("<<<QUESTION>>>", standalone_question) \
                 .replace("<<<FACTS>>>", facts_json)
                 
-            logger.info("Generating final answer with Gemini...")
-            final_answer = self._call_gemini(prompt_answer, model="gemini-2.5-flash", max_output_tokens=4096)
+            logger.info("Generating final answer with Genma...")
+            final_answer = self._call_genma(prompt_answer, max_output_tokens=8192)
 
             return {
                 "answer": final_answer,
