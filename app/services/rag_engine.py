@@ -5,7 +5,6 @@ import re
 import time
 import numpy as np
 import faiss
-import google.generativeai as genai
 from typing import List, Dict, Any, Tuple
 from dataclasses import dataclass
 from neo4j import GraphDatabase
@@ -13,6 +12,8 @@ from huggingface_hub import InferenceClient
 from google.api_core import retry, exceptions
 import logging
 from app.config import settings
+from google import genai
+from google.genai import types
 
 logger = logging.getLogger(__name__)
 
@@ -240,9 +241,7 @@ class MedicalGraphRAG:
             auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD)
         )
         
-        genai.configure(api_key=settings.GOOGLE_API_KEY)
-        # Lưu ý: Nếu key free tier quá tải với flash 2.0, hãy đổi thành "gemini-1.5-flash"
-        self.gemini_model = genai.GenerativeModel("gemini-2.0-flash") 
+        self.client = genai.Client(api_key=settings.GOOGLE_API_KEY)
 
         self.hf_client = InferenceClient(
             token=settings.HF_API_KEY,
@@ -383,19 +382,40 @@ class MedicalGraphRAG:
         return True
     
     @retry.Retry(predicate=retry.if_exception_type(exceptions.ResourceExhausted))
-    def _call_gemini(self, prompt: str, model: str = "gemini-2.0-flash", max_output_tokens: int = 1024, temperature: float = 0.0) -> str:
+    def _call_gemini(self, prompt: str, model: str = "gemini-2.5-flash", max_output_tokens: int = 1024, temperature: float = 0.0) -> str:
         """
         Call Gemini with a single plain-string prompt (no system role).
         Returns text content.
         """
         # generate_content may accept 'prompt' as plain string depending on SDK version
         # Use a simple wrapper and try common attributes for response extraction
-        resp = genai.GenerativeModel(model).generate_content(
-            prompt,
-            generation_config={
-                "max_output_tokens": max_output_tokens,
-                "temperature": temperature,
-            },
+        resp = self.client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+
+                safety_settings=[
+                    # Hate Speech
+                    types.SafetySetting(
+                        category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                        threshold=types.HarmBlockThreshold.OFF,
+                    ),
+
+                    # Harassment
+                    types.SafetySetting(
+                        category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                        threshold=types.HarmBlockThreshold.OFF,
+                    ),
+
+                    # Civil Discourse
+                    types.SafetySetting(
+                        category=types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
+                        threshold=types.HarmBlockThreshold.OFF,
+                    ),
+                ],
+            )
         )
         return resp.text
     
@@ -433,7 +453,7 @@ class MedicalGraphRAG:
             
         try:
             # Dùng model rẻ/nhanh nhất để rewrite (Flash 2.0 rất tốt việc này)
-            rewritten = self._call_gemini(prompt, model="gemini-2.0-flash", max_output_tokens=256)
+            rewritten = self._call_gemini(prompt, model="gemini-2.5-flash", max_output_tokens=256)
             return rewritten.strip()
         except Exception as e:
             logger.error(f"Error rewriting question: {e}")
@@ -650,7 +670,7 @@ class MedicalGraphRAG:
             .replace("<CANDIDATES>", json.dumps(rich_candidates[:500], ensure_ascii=False)) \
             .replace("<BENH_CANDIDATES>", json.dumps(disease_names_only, ensure_ascii=False))
 
-            canon_raw = self._call_gemini(prompt_can, model="gemini-2.0-flash", max_output_tokens=1024)
+            canon_raw = self._call_gemini(prompt_can, model="gemini-2.5-flash", max_output_tokens=1024)
             canon_json = self._safe_parse_json(canon_raw)
             
             selected_entities = []
@@ -661,7 +681,6 @@ class MedicalGraphRAG:
                 selected_entities = rich_candidates[:3]
                 
             logger.info(f"Canonicalized to: {json.dumps(selected_entities, ensure_ascii=False)}...")
-            logger.info(f"Canonicalized disease to: {json.dumps(disease_names_only, ensure_ascii=False)}...")
 
             REAL_SCHEMA_TEXT = self._get_graph_schema(self.driver)
             
@@ -670,7 +689,7 @@ class MedicalGraphRAG:
             .replace("<<<CANDIDATES>>>", json.dumps(selected_entities, ensure_ascii=False)) \
             .replace("<<<SCHEMA>>>", REAL_SCHEMA_TEXT)
 
-            cy_raw = self._call_gemini(prompt_cy, model="gemini-2.0-flash", max_output_tokens=1024)
+            cy_raw = self._call_gemini(prompt_cy, model="gemini-2.5-flash", max_output_tokens=1024)
             parsed = self._safe_parse_json(cy_raw)
             
             # cypher = ""
@@ -748,7 +767,7 @@ class MedicalGraphRAG:
                 .replace("<<<FACTS>>>", facts_json)
                 
             logger.info("Generating final answer with Gemini...")
-            final_answer = self._call_gemini(prompt_answer, model="gemini-2.0-flash", max_output_tokens=4096)
+            final_answer = self._call_gemini(prompt_answer, model="gemini-2.5-flash", max_output_tokens=4096)
 
             return {
                 "answer": final_answer,
