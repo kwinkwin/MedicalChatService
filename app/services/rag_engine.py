@@ -14,8 +14,39 @@ import logging
 from app.config import settings
 from google import genai
 from google.genai import types
+from google.genai.errors import ClientError, ServerError, APIError
 
 logger = logging.getLogger(__name__)
+
+def parse_gemini_error(e: ClientError):
+    """Trả về dict an toàn, không bao giờ gây lỗi."""
+    # 1. Lấy mã HTTP
+    code = getattr(e, "code", None)
+
+    # 2. Lấy JSON từ nơi có thể
+    raw = None
+
+    # ưu tiên response_json
+    if hasattr(e, "response_json") and isinstance(e.response_json, dict):
+        raw = e.response_json
+
+    # fallback: parse thủ công từ httpx
+    if raw is None:
+        try:
+            raw = e.response.json()
+        except:
+            raw = {}
+
+    error = raw.get("error", {})
+
+    status = error.get("status", "")
+    message = error.get("message", "")
+
+    details = error.get("details", [{}])
+    reason = details[0].get("reason", "")
+
+    return code, status, reason, message
+
 
 # --- 1. PROMPTS (Copy từ Notebook) ---
 PROMPT_LLM_CANONICAL = (
@@ -386,24 +417,88 @@ class MedicalGraphRAG:
         return True
     
     # @retry.Retry(predicate=retry.if_exception_type(exceptions.ResourceExhausted))
-    def _call_genma(self, prompt: str, model: str = "gemma-3-27b-it", max_output_tokens: int = 1024, temperature: float = 0.0, api_key=None) -> str:
-        """
-        Call Genma with a single plain-string prompt (no system role).
-        Returns text content.
-        """
+    # def _call_genma(self, prompt: str, model: str = "gemma-3-27b-it", max_output_tokens: int = 1024, temperature: float = 0.0, api_key=None) -> str:
+    #     """
+    #     Call Genma with a single plain-string prompt (no system role).
+    #     Returns text content.
+    #     """
+    #     max_retries = len(settings.GOOGLE_KEYS) if settings.GOOGLE_KEYS else 1
+        
+    #     last_error = None
+        
+    #     for attempt in range(max_retries):
+    #         try:
+    #             # 1. Nếu không truyền api_key cụ thể, lấy key từ vòng xoay
+    #             current_api_key = api_key if api_key else settings.get_next_google_key()
+                
+    #             # 2. Khởi tạo client với key này
+    #             self.client = genai.Client(api_key=current_api_key)
+                
+    #             # 3. Gọi API
+    #             resp = self.client.models.generate_content(
+    #                 model=model,
+    #                 contents=prompt,
+    #                 config=types.GenerateContentConfig(
+    #                     temperature=temperature,
+    #                     max_output_tokens=max_output_tokens,
+    #                     safety_settings=[
+    #                         types.SafetySetting(
+    #                             category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+    #                             threshold=types.HarmBlockThreshold.OFF,
+    #                         ),
+    #                         types.SafetySetting(
+    #                             category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+    #                             threshold=types.HarmBlockThreshold.OFF,
+    #                         ),
+    #                         types.SafetySetting(
+    #                             category=types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
+    #                             threshold=types.HarmBlockThreshold.OFF,
+    #                         ),
+    #                     ],
+    #                 )
+    #             )
+                
+    #             # Nếu thành công, trả về kết quả ngay
+    #             return resp.text
+
+    #         except exceptions.ResourceExhausted as e:
+    #             # 429: Hết Quota -> Log warning và tiếp tục vòng lặp (lấy key tiếp theo)
+    #             logger.warning(f"Key {current_api_key[:10]}... hết Quota. Đang đổi sang key khác... (Lần thử {attempt + 1}/{max_retries})")
+    #             last_error = e
+    #             # Set api_key về None để vòng lặp sau tự lấy key mới từ settings
+    #             api_key = None 
+    #             time.sleep(1) # Nghỉ 1 xíu trước khi đổi
+    #             continue
+
+    #         except exceptions.PermissionDenied as e:
+    #             # 403: Key sai hoặc bị khóa -> Log và đổi key
+    #             logger.warning(f"Key {current_api_key[:10]}... bị từ chối quyền. Đang đổi... (Lần thử {attempt + 1}/{max_retries})")
+    #             last_error = e
+    #             api_key = None
+    #             continue
+
+    #         except Exception as e:
+    #             # Các lỗi khác (500, Bad Request...) thì throw luôn, không đổi key làm gì
+    #             logger.error(f"Lỗi không liên quan đến Key: {e}")
+    #             raise e
+
+    #     # Nếu chạy hết vòng lặp (hết sạch key) mà vẫn lỗi
+    #     logger.error("Đã thử tất cả các Key nhưng đều thất bại.")
+    #     raise last_error
+
+
+    def _call_genma(self, prompt: str, model: str = "gemma-3-27b-it",
+                max_output_tokens: int = 1024, temperature: float = 0.0,
+                api_key=None) -> str:
+
         max_retries = len(settings.GOOGLE_KEYS) if settings.GOOGLE_KEYS else 1
-        
         last_error = None
-        
+
         for attempt in range(max_retries):
             try:
-                # 1. Nếu không truyền api_key cụ thể, lấy key từ vòng xoay
                 current_api_key = api_key if api_key else settings.get_next_google_key()
-                
-                # 2. Khởi tạo client với key này
                 self.client = genai.Client(api_key=current_api_key)
-                
-                # 3. Gọi API
+
                 resp = self.client.models.generate_content(
                     model=model,
                     contents=prompt,
@@ -426,33 +521,59 @@ class MedicalGraphRAG:
                         ],
                     )
                 )
-                
-                # Nếu thành công, trả về kết quả ngay
+
                 return resp.text
 
-            except exceptions.ResourceExhausted as e:
-                # 429: Hết Quota -> Log warning và tiếp tục vòng lặp (lấy key tiếp theo)
-                logger.warning(f"Key {current_api_key[:10]}... hết Quota. Đang đổi sang key khác... (Lần thử {attempt + 1}/{max_retries})")
-                last_error = e
-                # Set api_key về None để vòng lặp sau tự lấy key mới từ settings
-                api_key = None 
-                time.sleep(1) # Nghỉ 1 xíu trước khi đổi
-                continue
+            except ClientError as e:
+                code, status, reason, message = parse_gemini_error(e)
 
-            except exceptions.PermissionDenied as e:
-                # 403: Key sai hoặc bị khóa -> Log và đổi key
-                logger.warning(f"Key {current_api_key[:10]}... bị từ chối quyền. Đang đổi... (Lần thử {attempt + 1}/{max_retries})")
-                last_error = e
-                api_key = None
-                continue
+                # 429 quota/rate limit
+                if code == 429:
+                    logger.warning(f"Key {current_api_key[:10]}... bị rate limit.")
+                    api_key = None
+                    last_error = e
+                    time.sleep(1)
+                    continue
+
+                # key expired
+                if reason in ("API_KEY_INVALID", "API_KEY_EXPIRED"):
+                    logger.warning(f"Key {current_api_key[:10]}... hết hạn. Đổi key...")
+                    api_key = None
+                    last_error = e
+                    continue
+
+                # key bị suspend
+                if reason == "CONSUMER_SUSPENDED":
+                    logger.warning(f"Key {current_api_key[:10]}... bị SUSPENDED. Loại key này ra khỏi pool.")
+                    settings.disable_google_key(current_api_key)  # <-- bạn chỉ cần tự triển khai
+                    api_key = None
+                    last_error = e
+                    continue
+
+                # unauthorized/forbidden
+                if code in (401, 403):
+                    logger.warning(f"Key {current_api_key[:10]}... bị 403/401. Đổi key.")
+                    api_key = None
+                    last_error = e
+                    continue
+
+                logger.error(f"Lỗi không phải do key: {message}")
+                raise
+
+
+            except ServerError as e:
+                logger.error(f"Gemini server error: {e}")
+                raise
+
+            except APIError as e:
+                logger.error(f"Gemini API error: {e}")
+                raise
 
             except Exception as e:
-                # Các lỗi khác (500, Bad Request...) thì throw luôn, không đổi key làm gì
-                logger.error(f"Lỗi không liên quan đến Key: {e}")
-                raise e
+                logger.error(f"Unexpected error: {e}")
+                raise
 
-        # Nếu chạy hết vòng lặp (hết sạch key) mà vẫn lỗi
-        logger.error("Đã thử tất cả các Key nhưng đều thất bại.")
+        logger.error("Đã thử tất cả API key nhưng đều thất bại.")
         raise last_error
     
     def _format_history(self, history: List[dict], limit: int = 6) -> str:
