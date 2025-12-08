@@ -50,5 +50,10 @@ class Settings:
         if not self.GOOGLE_KEYS:
             raise ValueError("Không tìm thấy Google API Key nào trong .env (kiểm tra lại biến GOOGLE_API_KEY_x)")
         return next(self._key_cycle)
+    
+    def disable_google_key(self, key):
+        if key in self.GOOGLE_KEYS:
+            self.GOOGLE_KEYS.remove(key)
+
 
 settings = Settings()
